@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model checkpoints & weights (too large for git)
+exp1_*/
+exp2_*/
+exp3_*/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# HuggingFace cache
+.cache/
+
+# Env / secrets
+.env
+TOKEN.py
+*.key
+
+# Logs
+*.log
+wandb/
+runs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results PNGs are tracked (committed intentionally)
+# results/*.png  ← do NOT ignore
