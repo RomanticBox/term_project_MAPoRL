@@ -1,4 +1,5 @@
 # Standard library imports
+import datetime
 import gc
 import json
 import os
@@ -16,7 +17,11 @@ import safetensors.torch
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import wandb
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
 from accelerate import Accelerator
 from accelerate.utils import broadcast, gather_object
 from datasets import Dataset
@@ -389,11 +394,9 @@ class PPOv2Trainer(Trainer):
             raise ValueError(f"Dataset name '{self.dataset_name}' not supported. "
                            "Supported datasets: ANLI, GSM8k, FANTOM")
 
-        # Setup optimizers
+        # Setup optimizers — created internally at line ~469; accept external override if provided
         if optimizers[0] is not None:
             self.optimizer, self.lr_scheduler = optimizers
-        else:
-            raise ValueError("optimizers must be specified")
 
         # Handle checkpoint reloading
         if self.reload:
@@ -440,7 +443,7 @@ class PPOv2Trainer(Trainer):
             assert (
                 args.local_mini_batch_size >= 8
             ), f"Per-rank minibatch size {args.local_mini_batch_size} is insufficient for whitening"
-`
+
         args.num_updates = args.total_episodes // args.batch_size
 
         time_tensor = torch.tensor(int(time.time()), device=main_accelerator.device)
@@ -788,11 +791,27 @@ class PPOv2Trainer(Trainer):
             if device == torch.device("cuda:0"):
                 print("=============================")
                 print(f"{update} update for training")
+                _now = datetime.datetime.now()
+                _elapsed = time.time() - start_time
+                _updates_done = update - self.updates_start_epoch
+                _secs_per_update = _elapsed / max(_updates_done, 1)
+                _remaining = (args.num_updates - update - 1) * _secs_per_update
+                _mem_mb = torch.cuda.memory_allocated() // (1024 * 1024)
+                _mem_reserved_mb = torch.cuda.memory_reserved() // (1024 * 1024)
+                _progress_line = (
+                    f"[{_now.strftime('%H:%M:%S')}] update {update}/{args.num_updates - 1}"
+                    f"  elapsed={datetime.timedelta(seconds=int(_elapsed))}"
+                    f"  eta={datetime.timedelta(seconds=int(_remaining))}"
+                    f"  sec/update={_secs_per_update:.1f}"
+                    f"  mem={_mem_mb}MB/{_mem_reserved_mb}MB\n"
+                )
+                with open(f"{args.output_dir}/progress.log", "a") as _pf:
+                    _pf.write(_progress_line)
 
             global_step += 1 * args.batch_size
             self.lr_scheduler.step()
             data = next(iter_dataloader)
-            
+
             with torch.no_grad():
                 query_responses_turn_agent = {}
                 query_responses_no_history_turn_agent = {}
@@ -1487,10 +1506,11 @@ class PPOv2Trainer(Trainer):
                             # Create the penalty_condition based on the matches
                             contain_box_sequence = torch.tensor(contain_box_pattern, dtype=torch.bool, device=device)
 
-
+                            # Default: all samples pass (no penalty); overridden when non_eos_penalty=True
+                            penalty_condition = torch.ones(scores.shape[0], dtype=torch.bool, device=device)
                             if self.non_eos_penalty:
                                 penalty_condition = sufficient_length & no_invalid_repetitions
-                                
+
                                 if self.task_training or (turn != 0):
                                     penalty_condition = penalty_condition & contain_box_sequence
                                     
@@ -2064,6 +2084,28 @@ class PPOv2Trainer(Trainer):
                     existing_metrics.append(metrics)
                     with open(metrics_file, "w") as f:
                         json.dump(existing_metrics, f, indent=4)
+
+                    # Write human-readable progress line with key metrics
+                    _score_parts = "  ".join(
+                        f"score_t{t}={metrics.get(f'objective/scores_turn_{t}', 0):.3f}"
+                        for t in range(self.round_num)
+                    )
+                    _loss_parts = "  ".join(
+                        f"pg_loss_t{t}={metrics.get(f'loss/policy_avg_turn_{t}', 0):.4f}"
+                        for t in range(self.round_num)
+                    )
+                    _kl_parts = "  ".join(
+                        f"kl_t{t}={metrics.get(f'objective/kl_turn_{t}', 0):.4f}"
+                        for t in range(self.round_num)
+                    )
+                    _done_line = (
+                        f"  -> DONE  {_score_parts}\n"
+                        f"           {_loss_parts}\n"
+                        f"           {_kl_parts}\n"
+                    )
+                    with open(f"{args.output_dir}/progress.log", "a") as _pf:
+                        _pf.write(_done_line)
+
                     #save metrics manually on wandb
                     graph_gen_turn(args.output_dir)
                     # graph_gen_turn_specific(args.output_dir)

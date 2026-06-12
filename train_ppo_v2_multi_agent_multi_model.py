@@ -14,7 +14,11 @@ from typing import Dict, List, Optional, Tuple
 # Third-party imports
 import torch
 import torch.nn as nn
-import wandb
+try:
+    import wandb
+    _WANDB_AVAILABLE = True
+except ImportError:
+    _WANDB_AVAILABLE = False
 from datasets import load_dataset, concatenate_datasets
 from peft import get_peft_model
 from transformers import AutoTokenizer
@@ -24,7 +28,7 @@ from utils.patch.peft_tuner import apply_patch_peft_tuner
 apply_patch_peft_tuner()
 from utils.utils_general import set_seed, load_config_from_python, zero_and_freeze_adapter
 from utils.utils_cooperateLLM import (
-    create_invalid_entry, safe_execute_code,
+    create_invalid_entry, safe_execute_code, INVALID_ANSWER,
     MAX_INPUT_LENGTH_MATH, TRAIN_DATASET_SIZE_MATH, TEST_DATASET_SIZE_MATH, DEBUG_DATASET_SIZE
 )
 from utils.utils_general import (
@@ -109,7 +113,10 @@ def prepare_dataset(dataset_name: str, tokenizer, split: str, debug: bool = Fals
                     "answer": tokenizer.encode(str(result))
                 }
             except Exception:
-                return create_invalid_entry(input_ids, tokenizer)
+                try:
+                    return create_invalid_entry(input_ids, tokenizer)
+                except NameError:
+                    return {"input_ids": [], "lengths": 0, "answer": tokenizer.encode(str(-1))}
 
     elif dataset_name == "ANLI":
         dataset = load_dataset('anli', split=f"{split}_r3")
@@ -156,8 +163,8 @@ def prepare_dataset(dataset_name: str, tokenizer, split: str, debug: bool = Fals
     dataset = dataset.map(
         tokenize,
         remove_columns=dataset.column_names,
-        num_proc=1 if config.sanity_check else multiprocessing.cpu_count(),
-        load_from_cache_file=not config.sanity_check,
+        num_proc=1,
+        load_from_cache_file=False,
     )
     dataset = dataset.filter(lambda x: x['answer'] != tokenizer.encode(str(-1)))
 
@@ -172,6 +179,7 @@ if __name__ == "__main__":
     parser.add_argument('--alpha', type=parse_list, required=True, help='Alpha value for reward shaping')
     parser.add_argument('--reload', action='store_true', help='Whether to reload from a previous run')
     args = parser.parse_args()
+    alpha = args.alpha
 
     # Validate configuration file exists
     if not os.path.exists(args.config):
@@ -219,7 +227,8 @@ if __name__ == "__main__":
         seed=random_seed,
         output_dir=output_dir,
     )
-    wandb.init(name=run_name)
+    if _WANDB_AVAILABLE and report_to != "none":
+        wandb.init(name=run_name)
 
     if not reload:
         shutil.rmtree(output_dir, ignore_errors=True)
