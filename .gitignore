@@ -40,3 +40,4 @@ Thumbs.db
 
 # Results PNGs are tracked (committed intentionally)
 # results/*.png  ← do NOT ignore
+MAPoRL_tutorial.ipynb
